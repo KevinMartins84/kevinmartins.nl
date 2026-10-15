@@ -1,0 +1,63 @@
+name: Deploy to Strato
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-strato
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Rsync site to Strato wwwroot
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          # Destination is relative to the rrsync-restricted wwwroot on the server.
+          # No --delete: keep server-side backups and unrelated files.
+          rsync -avz \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude 'README.md' \
+            --exclude 'CNAME' \
+            --exclude '.gitignore' \
+            -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o BatchMode=yes" \
+            ./index.html ./styles.css ./favicon.svg \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:./"
+
+          # Optional assets/ directory if present in a future commit
+          if [ -d assets ]; then
+            rsync -avz \
+              -e "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o BatchMode=yes" \
+              ./assets/ \
+              "${DEPLOY_USER}@${DEPLOY_HOST}:./assets/"
+          fi
+
+      - name: Verify live site
+        run: |
+          set -euo pipefail
+          CODE=$(curl -sS -o /tmp/kmnl-live.html -w '%{http_code}' --max-time 30 https://kevinmartins.nl/)
+          echo "HTTP $CODE"
+          test "$CODE" = "200"
+          grep -q 'Felicity EMS' /tmp/kmnl-live.html
+          grep -q 'ems.delsingenergie.nl' /tmp/kmnl-live.html
+          grep -q 'iFaktor' /tmp/kmnl-live.html
+          echo "LIVE_OK"
